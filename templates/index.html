@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Video Downloader</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- 标题部分 -->
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-800 mb-2">YouTube Video Downloader</h1>
+            <p class="text-gray-600">输入YouTube视频链接开始下载</p>
+        </div>
+
+        <!-- 下载表单 -->
+        <div class="max-w-xl mx-auto bg-white rounded-lg shadow-md p-6 mb-8">
+            <div class="flex space-x-4">
+                <input type="text" id="url" 
+                       class="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                       placeholder="https://www.youtube.com/watch?v=...">
+                <button onclick="startDownload()" 
+                        class="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors">
+                    下载
+                </button>
+            </div>
+            <!-- 进度条 -->
+            <div id="progress-container" class="hidden mt-4">
+                <div class="mb-2">
+                    <div class="w-full bg-gray-200 rounded-full h-2.5">
+                        <div id="progress-bar" class="bg-blue-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="text-sm text-gray-600">
+                    <p id="progress-status" class="font-medium"></p>
+                    <p id="progress-details" class="mt-1"></p>
+                    <p id="progress-error" class="text-red-500 mt-1 hidden"></p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 视频列表 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {% for video in videos %}
+            <div class="bg-white rounded-lg shadow-md overflow-hidden">
+                <video class="w-full h-48 object-cover" controls>
+                    <source src="/downloads/{{ video.filename }}" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+                <div class="p-4">
+                    <h3 class="font-semibold text-lg mb-2">{{ video.title }}</h3>
+                    <p class="text-gray-600 text-sm mb-1">上传者: {{ video.uploader }}</p>
+                    <p class="text-gray-600 text-sm mb-1">时长: {{ video.duration }}秒</p>
+                    <p class="text-gray-600 text-sm mb-1">存储路径: downloads/{{ video.filename }}</p>
+                    <p class="text-gray-600 text-sm line-clamp-2">{{ video.description }}</p>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <script>
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+        function formatTime(seconds) {
+            if (!seconds) return '计算中...';
+            if (seconds === Infinity) return '未知';
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = Math.floor(seconds % 60);
+            return `${h > 0 ? h + '小时 ' : ''}${m}分${s}秒`;
+        }
+
+        async function startDownload() {
+            const url = document.getElementById('url').value;
+            if (!url) return;
+
+            const progressContainer = document.getElementById('progress-container');
+            const progressBar = document.getElementById('progress-bar');
+            const progressStatus = document.getElementById('progress-status');
+            const progressDetails = document.getElementById('progress-details');
+            const progressError = document.getElementById('progress-error');
+
+            progressContainer.classList.remove('hidden');
+            progressError.classList.add('hidden');
+            
+            try {
+                const formData = new FormData();
+                formData.append('url', url);
+                
+                const response = await fetch('/download', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                const ws = new WebSocket(`ws://${window.location.host}/ws/${data.video_id}`);
+                
+                ws.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    const progress = data.progress;
+                    
+                    progressBar.style.width = `${progress}%`;
+
+                    switch (data.status) {
+                        case 'starting':
+                            progressStatus.textContent = '准备下载中...';
+                            progressDetails.textContent = '';
+                            break;
+                        case 'downloading':
+                            progressStatus.textContent = `下载中: ${progress.toFixed(1)}%`;
+                            const speed = formatBytes(data.speed) + '/s';
+                            const downloaded = formatBytes(data.downloaded_bytes);
+                            const total = formatBytes(data.total_bytes);
+                            const eta = formatTime(data.eta);
+                            progressDetails.textContent = 
+                                `${downloaded} / ${total} | 速度: ${speed} | 剩余时间: ${eta}`;
+                            break;
+                        case 'finished':
+                            progressStatus.textContent = '下载完成!';
+                            progressDetails.textContent = `文件已保存: ${data.filename}`;
+                            setTimeout(() => {
+                                window.location.reload();
+                            }, 1500);
+                            break;
+                        case 'error':
+                            progressStatus.textContent = '下载失败';
+                            progressError.textContent = data.error;
+                            progressError.classList.remove('hidden');
+                            break;
+                    }
+                };
+                
+                ws.onerror = function(error) {
+                    console.error('WebSocket错误:', error);
+                    progressStatus.textContent = '连接错误';
+                    progressError.textContent = '与服务器的连接已断开';
+                    progressError.classList.remove('hidden');
+                };
+            } catch (error) {
+                console.error('请求错误:', error);
+                progressStatus.textContent = '下载失败';
+                progressError.textContent = '请求失败，请检查网址是否正确';
+                progressError.classList.remove('hidden');
+            }
+        }
+    </script>
+</body>
+</html> 
